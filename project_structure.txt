@@ -1,0 +1,1629 @@
+tasks:
+- message: Example task 1
+project_structure:
+- app.py
+- html-in-chat.py
+- launcher.py
+- readme.md
+- streaming_app.py
+- utils\chain.py
+- utils\chat_store.py
+- utils\copy_button.py
+- utils\export.py
+- utils\history.py
+- utils\load_llm.py
+- utils\presets.py
+- utils\streaming_chain.py
+- utils\ui_accessibility.py
+- utils\__init__.py
+files:
+- name: app.py
+  content: |
+    import streamlit as st
+
+    from utils.chain import run_chat_turn
+    from utils.chat_store import (
+        append_session_message,
+        clear_session,
+        create_session_id,
+        delete_last_message,
+        delete_last_assistant_message,
+        get_session_message_counts,
+        initialize_chat_store,
+        list_session_ids,
+        load_session_messages,
+    )
+    from utils.copy_button import render_copy_button
+    from utils.export import export_messages_as_json, export_messages_as_markdown
+    from utils.load_llm import (
+        get_default_disable_safety_filters,
+        get_default_temperature,
+        get_model_candidates,
+        is_api_key_configured,
+    )
+    from utils.presets import SYSTEM_INSTRUCTION_PRESETS
+    from utils.streaming_chain import DEFAULT_SYSTEM_INSTRUCTION
+    from utils.ui_accessibility import (
+        apply_accessibility_styles,
+        initialize_accessibility_state,
+        render_accessibility_controls,
+    )
+
+    st.set_page_config(page_title="Conversational Bot!")
+    st.title("Gemini Chatbot 💬")
+
+    if not is_api_key_configured():
+        st.error(
+            "Missing **GOOGLE_API_KEY** (or **GEMINI_API_KEY**). Add it to a `.env` file "
+            "in this project folder, then restart Streamlit."
+        )
+        st.stop()
+
+    initialize_chat_store()
+    initialize_accessibility_state()
+    if "chat_session_id" not in st.session_state:
+        st.session_state.chat_session_id = create_session_id()
+
+    sidebar_sessions = list_session_ids()
+    if st.session_state.chat_session_id not in sidebar_sessions:
+        sidebar_sessions.insert(0, st.session_state.chat_session_id)
+
+    st.sidebar.header("Chat Controls")
+    selected_session_id = st.sidebar.selectbox(
+        "Conversation",
+        options=sidebar_sessions,
+        index=sidebar_sessions.index(st.session_state.chat_session_id),
+    )
+    if selected_session_id != st.session_state.chat_session_id:
+        st.session_state.chat_session_id = selected_session_id
+        st.session_state.messages = load_session_messages(selected_session_id)
+        st.rerun()
+
+    if st.sidebar.button("New conversation", use_container_width=True):
+        st.session_state.chat_session_id = create_session_id()
+        st.session_state.messages = []
+        st.rerun()
+
+    if st.sidebar.button("Clear current conversation", use_container_width=True):
+        clear_session(st.session_state.chat_session_id)
+        st.session_state.messages = []
+        st.rerun()
+
+    if st.sidebar.button("Retry last response", use_container_width=True):
+        can_retry = (
+            len(st.session_state.messages) >= 2
+            and st.session_state.messages[-1]["role"] == "assistant"
+            and st.session_state.messages[-2]["role"] == "user"
+        )
+        if can_retry:
+            st.session_state.messages.pop()
+            delete_last_assistant_message(st.session_state.chat_session_id)
+            st.session_state.retry_requested = True
+            st.rerun()
+        else:
+            st.sidebar.info("Retry requires the latest turn to be user -> assistant.")
+
+    st.sidebar.caption("Model failover order")
+    st.sidebar.code(" -> ".join(get_model_candidates()))
+
+    if "system_instruction" not in st.session_state:
+        st.session_state.system_instruction = DEFAULT_SYSTEM_INSTRUCTION
+    if "temperature" not in st.session_state:
+        st.session_state.temperature = float(get_default_temperature())
+    if "max_history_messages" not in st.session_state:
+        st.session_state.max_history_messages = 24
+    if "disable_safety_filters" not in st.session_state:
+        st.session_state.disable_safety_filters = bool(get_default_disable_safety_filters())
+    if "system_prompt_preset_name" not in st.session_state:
+        st.session_state.system_prompt_preset_name = "Balanced assistant"
+
+    preset_names = list(SYSTEM_INSTRUCTION_PRESETS.keys())
+    if st.session_state.system_prompt_preset_name not in preset_names:
+        st.session_state.system_prompt_preset_name = preset_names[0]
+
+    st.sidebar.subheader("Generation")
+    temperature_value = min(max(float(st.session_state.temperature), 0.0), 2.0)
+    context_window_value = min(max(int(st.session_state.max_history_messages), 4), 60)
+    selected_preset = st.sidebar.selectbox(
+        "System prompt preset",
+        options=preset_names,
+        index=preset_names.index(st.session_state.system_prompt_preset_name),
+        help="Quickly switch behavior before editing the custom instruction text.",
+    )
+    st.session_state.system_prompt_preset_name = selected_preset
+    if st.sidebar.button("Apply selected preset", use_container_width=True):
+        st.session_state.system_instruction = SYSTEM_INSTRUCTION_PRESETS[selected_preset]
+        st.rerun()
+
+    st.session_state.temperature = st.sidebar.slider(
+        "Temperature",
+        min_value=0.0,
+        max_value=2.0,
+        value=temperature_value,
+        step=0.05,
+        help="Lower = more focused/deterministic. Higher = more creative/varied.",
+    )
+    st.session_state.max_history_messages = st.sidebar.slider(
+        "Context window (messages)",
+        min_value=4,
+        max_value=60,
+        value=context_window_value,
+        step=2,
+        help="How many recent messages are sent to the model each turn.",
+    )
+    st.session_state.system_instruction = st.sidebar.text_area(
+        "System instruction",
+        value=str(st.session_state.system_instruction),
+        height=120,
+        help="Steers response style/behavior for this browser session.",
+    )
+    st.session_state.disable_safety_filters = st.sidebar.checkbox(
+        "Disable dangerous-content safety filter",
+        value=bool(st.session_state.disable_safety_filters),
+        help="Enable only for controlled testing scenarios.",
+    )
+    render_accessibility_controls()
+    apply_accessibility_styles()
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = load_session_messages(st.session_state.chat_session_id)
+
+    if not st.session_state.messages:
+        initial_message = {"role": "assistant", "content": "Hi, I am a bot. How can I help you?"}
+        st.session_state.messages = [initial_message]
+        append_session_message(
+            st.session_state.chat_session_id,
+            initial_message["role"],
+            initial_message["content"],
+        )
+
+    session_counts = get_session_message_counts(st.session_state.chat_session_id)
+    st.sidebar.caption(
+        "Session stats: "
+        f"{session_counts['total']} total messages "
+        f"({session_counts['user']} user / {session_counts['assistant']} assistant)"
+    )
+
+    st.sidebar.subheader("Export")
+    st.sidebar.download_button(
+        "Download current chat (.md)",
+        data=export_messages_as_markdown(
+            st.session_state.messages,
+            title=f"Conversation {st.session_state.chat_session_id}",
+        ),
+        file_name=f"{st.session_state.chat_session_id}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+    st.sidebar.download_button(
+        "Download current chat (.json)",
+        data=export_messages_as_json(st.session_state.messages),
+        file_name=f"{st.session_state.chat_session_id}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    for i, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+            if message["role"] == "assistant":
+                render_copy_button(message["content"], key=f"assistant_msg_{i}")
+
+    prompt = st.chat_input("Say something")
+
+    if prompt:
+        if st.session_state.messages[-1]["role"] != "user":
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            append_session_message(st.session_state.chat_session_id, "user", prompt)
+            with st.chat_message("user"):
+                st.write(prompt)
+
+        if st.session_state.messages[-1]["role"] != "assistant":
+            with st.chat_message("assistant"):
+                try:
+                    reply = run_chat_turn(
+                        st.session_state.messages,
+                        system_instruction=st.session_state.system_instruction,
+                        max_history_messages=st.session_state.max_history_messages,
+                        temperature=st.session_state.temperature,
+                        disable_safety_filters=st.session_state.disable_safety_filters,
+                    )
+                except Exception as err:
+                    st.error(f"Something went wrong talking to the model:\n\n`{err}`")
+                    if st.session_state.messages[-1]["role"] == "user":
+                        st.session_state.messages.pop()
+                        delete_last_message(st.session_state.chat_session_id, role="user")
+                else:
+                    st.session_state.messages.append({"role": "assistant", "content": reply})
+                    append_session_message(st.session_state.chat_session_id, "assistant", reply)
+                    st.write(reply)
+                    render_copy_button(
+                        reply,
+                        key=f"assistant_msg_{len(st.session_state.messages) - 1}",
+                    )
+
+    if st.session_state.get("retry_requested"):
+        st.session_state.retry_requested = False
+        if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+            with st.chat_message("assistant"):
+                try:
+                    retry_reply = run_chat_turn(
+                        st.session_state.messages,
+                        system_instruction=st.session_state.system_instruction,
+                        max_history_messages=st.session_state.max_history_messages,
+                        temperature=st.session_state.temperature,
+                        disable_safety_filters=st.session_state.disable_safety_filters,
+                    )
+                except Exception as err:
+                    st.error(f"Retry failed talking to the model:\n\n`{err}`")
+                else:
+                    st.session_state.messages.append({"role": "assistant", "content": retry_reply})
+                    append_session_message(st.session_state.chat_session_id, "assistant", retry_reply)
+                    st.write(retry_reply)
+                    render_copy_button(
+                        retry_reply,
+                        key=f"assistant_msg_{len(st.session_state.messages) - 1}",
+                    )
+- name: html-in-chat.py
+  content: "#!/usr/bin/env python3\n# Streamlit Component for a Chatbot UI:\n#\n#\
+    \ HTML in chat and Refresh Chat Button\n# https://github.com/AI-Yash/st-chat?tab=readme-ov-file\n\
+    #\n# pip install streamlit-chat\n\nimport streamlit as st\nfrom streamlit_chat\
+    \ import message\nfrom streamlit.components.v1 import html\n\nmessage(\"My message\"\
+    ) \nmessage(\"Hello bot!\", is_user=True)  # align's the message to the right\n\
+    \n\ndef on_input_change():\n    user_input = st.session_state.user_input\n   \
+    \ st.session_state.past.append(user_input)\n    st.session_state.generated.append(\"\
+    The messages from Bot\\nWith new line\")\n\ndef on_btn_click():\n    del st.session_state.past[:]\n\
+    \    del st.session_state.generated[:]\n\naudio_path = \"https://docs.google.com/uc?export=open&id=16QSvoLWNxeqco_Wb2JvzaReSAw5ow6Cl\"\
+    \nimg_path = \"https://www.groundzeroweb.com/wp-content/uploads/2017/05/Funny-Cat-Memes-11.jpg\"\
+    \nyoutube_embed = '''\n<iframe width=\"400\" height=\"215\" src=\"https://www.youtube.com/embed/LMQ5Gauy17k\"\
+    \ title=\"YouTube video player\" frameborder=\"0\" allow=\"accelerometer; encrypted-media;\"\
+    ></iframe>\n'''\n\nmarkdown = \"\"\"\n### HTML in markdown is ~quite~ **unsafe**\n\
+    <blockquote>\n  However, if you are in a trusted environment (you trust the markdown).\
+    \ You can use allow_html props to enable support for html.\n</blockquote>\n\n\
+    * Lists\n* [ ] todo\n* [x] done\n\nMath:\n\nLift($L$) can be determined by Lift\
+    \ Coefficient ($C_L$) like the following\nequation.\n\n$$\nL = \\\\frac{1}{2}\
+    \ \\\\rho v^2 S C_L\n$$\n\n~~~py\nimport streamlit as st\n\nst.write(\"Python\
+    \ code block\")\n~~~\n\n~~~js\nconsole.log(\"Here is some JavaScript code\")\n\
+    ~~~\n\n\"\"\"\n\ntable_markdown = '''\nA Table:\n\n| Feature     | Support   \
+    \           |\n| ----------: | :------------------- |\n| CommonMark  | 100%  \
+    \               |\n| GFM         | 100% w/ `remark-gfm` |\n'''\n\nst.session_state.setdefault(\n\
+    \    'past', \n    ['plan text with line break',\n     'play the song \"Dancing\
+    \ Vegetables\"', \n     'show me image of cat', \n     'and video of it',\n  \
+    \   'show me some markdown sample',\n     'table in markdown']\n)\nst.session_state.setdefault(\n\
+    \    'generated', \n    [{'type': 'normal', 'data': 'Line 1 \\n Line 2 \\n Line\
+    \ 3'},\n     {'type': 'normal', 'data': f'<audio controls src=\"{audio_path}\"\
+    ></audio>'}, \n     {'type': 'normal', 'data': f'<img width=\"100%\" height=\"\
+    200\" src=\"{img_path}\"/>'}, \n     {'type': 'normal', 'data': f'{youtube_embed}'},\n\
+    \     {'type': 'normal', 'data': f'{markdown}'},\n     {'type': 'table', 'data':\
+    \ f'{table_markdown}'}]\n)\n\nst.title(\"Chat placeholder\")\n\nchat_placeholder\
+    \ = st.empty()\n\nwith chat_placeholder.container():    \n    for i in range(len(st.session_state['generated'])):\
+    \                \n        message(st.session_state['past'][i], is_user=True,\
+    \ key=f\"{i}_user\")\n        message(\n            st.session_state['generated'][i]['data'],\
+    \ \n            key=f\"{i}\", \n            allow_html=True,\n            is_table=True\
+    \ if st.session_state['generated'][i]['type']=='table' else False\n        )\n\
+    \    \n    st.button(\"Clear message\", on_click=on_btn_click)\n\nwith st.container():\n\
+    \    st.text_input(\"User Input:\", on_change=on_input_change, key=\"user_input\"\
+    )\n"
+- name: launcher.py
+  content: |-
+    #!/usr/bin/env python3
+    # A launcher script for running streamlit_app.py
+    # Then turning this script into an EXE using PythonToExe:
+
+    import subprocess
+    import sys
+    import os
+
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    app_path = os.path.join(BASE_DIR, "streaming_app.py")
+
+    subprocess.run([
+        "python",
+        "-m",
+        "streamlit",
+        "run",
+        app_path
+    ])
+
+    import subprocess
+    import os
+
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    env = os.environ.copy()
+
+    # Force local execution context
+    env["PYTHONPATH"] = BASE_DIR
+
+    subprocess.run([
+        "streamlit",
+        "run",
+        os.path.join(BASE_DIR, "streamlit_app.py")
+    ], env=env)
+
+
+    # Forcing PyInstaller to include Streamlit:
+    #pyinstaller --onefile --hidden-import=streamlit streamlit_app.py
+
+    # Streamlit has many internal files, so use '--collect-all' to bundle everything
+    #pyinstaller --onefile --noconsole --collect-all streamlit launcher.py
+
+    # Tell PyInstaller to “Include this module even if you don’t detect it”.
+    # pyinstaller ^
+    #   --onefile ^
+    #   --noconsole ^
+    #   --collect-all streamlit ^
+    #   --hidden-import=streamlit ^
+    #   --hidden-import=streamlit.web ^
+    #   --hidden-import=streamlit.runtime ^
+    #   streamlit_app.py
+- name: readme.md
+  content: |
+    # Conversational Chatbot (LangChain + Gemini + Streamlit)
+
+    Original inspiration: [np-n blog / conversational_chatbot_using_langchain_ang_gemini](https://github.com/np-n/blog_code_snippets/tree/master/conversational_chatbot_using_langchain_ang_gemini)
+
+    This project includes:
+    - Streamlit chat UIs (streaming and non-streaming)
+    - LangChain + Gemini integration with model failover
+    - SQLite conversation persistence
+    - Per-message copy buttons
+    - Runtime generation controls (temperature, context window, system instruction)
+    - Prompt behavior presets (concise, tutor, analyst, etc.)
+    - Accessibility controls (text size, line spacing, high-contrast outlines, reduced motion)
+    - Chat export to Markdown and JSON
+
+    ---
+
+    ## Requirements
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    `requirements.txt` includes:
+    - `langchain` (1.x)
+    - `langchain-core`
+    - `langchain-google-genai`
+    - `python-dotenv`
+    - `streamlit`
+
+    ---
+
+    ## Configuration
+
+    1. Copy `.env.example` to `.env`.
+    2. Add your Gemini key:
+
+    ```env
+    GOOGLE_API_KEY=your_key_here
+    ```
+
+    Optional settings:
+
+    ```env
+    # Primary model
+    GEMINI_MODEL=gemini-2.5-flash
+
+    # Fallback models (comma-separated)
+    GEMINI_FALLBACK_MODELS=gemini-2.0-flash,gemini-1.5-flash
+
+    # Default generation temperature
+    GEMINI_TEMPERATURE=0.2
+
+    # Disable dangerous-content safety filtering (use only for controlled testing)
+    GEMINI_DISABLE_SAFETY_FILTERS=false
+    ```
+
+    ---
+
+    ## Run
+
+    Streaming UI (recommended):
+
+    ```bash
+    streamlit run streaming_app.py
+    ```
+
+    Non-streaming UI:
+
+    ```bash
+    streamlit run app.py
+    ```
+
+    If browser auto-open fails, use [http://localhost:8501](http://localhost:8501).
+
+    ---
+
+    ## UI Features
+
+    - `Chat Controls`: switch sessions, start new chat, clear chat, retry last response.
+    - `Generation`: apply a prompt preset, then tune temperature, context window size, and live system instruction.
+    - `Accessibility`: tune text size/spacing, high-contrast outlines, and reduced motion.
+    - `Export`: download current conversation as `.md` or `.json`.
+    - Assistant bubble action: `Copy reply`.
+
+    ---
+
+    ## Project Layout
+
+    | Path | Purpose |
+    |------|---------|
+    | `streaming_app.py` | Streamlit app with token streaming |
+    | `app.py` | Streamlit app with full-turn replies |
+    | `utils/load_llm.py` | Gemini client setup and config |
+    | `utils/streaming_chain.py` | Streaming chain logic |
+    | `utils/chain.py` | Non-streaming chain logic |
+    | `utils/history.py` | Transcript formatting and context trimming |
+    | `utils/chat_store.py` | SQLite persistence helpers |
+    | `utils/export.py` | Markdown/JSON export helpers |
+    | `utils/presets.py` | Reusable system-instruction presets |
+    | `utils/ui_accessibility.py` | Sidebar accessibility controls and CSS |
+    | `utils/copy_button.py` | Clipboard copy button helper |
+- name: streaming_app.py
+  content: |
+    import streamlit as st
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from utils.chat_store import (
+        append_session_message,
+        clear_session,
+        create_session_id,
+        delete_last_message,
+        delete_last_assistant_message,
+        get_session_message_counts,
+        initialize_chat_store,
+        list_session_ids,
+        load_session_messages,
+    )
+    from utils.copy_button import render_copy_button
+    from utils.export import export_messages_as_json, export_messages_as_markdown
+    from utils.load_llm import (
+        get_default_disable_safety_filters,
+        get_default_temperature,
+        get_model_candidates,
+        is_api_key_configured,
+    )
+    from utils.presets import SYSTEM_INSTRUCTION_PRESETS
+    from utils.streaming_chain import DEFAULT_SYSTEM_INSTRUCTION, stream_chat_response
+    from utils.ui_accessibility import (
+        apply_accessibility_styles,
+        initialize_accessibility_state,
+        render_accessibility_controls,
+    )
+
+    st.set_page_config(page_title="Conversational Bot!")
+    st.title("Conversational Chatbot 💬")
+
+    if not is_api_key_configured():
+        st.error(
+            "Missing **GOOGLE_API_KEY** (or **GEMINI_API_KEY**). Add it to a `.env` file "
+            "in this project folder, then restart Streamlit."
+        )
+        st.stop()
+
+    initialize_chat_store()
+    initialize_accessibility_state()
+    if "chat_session_id" not in st.session_state:
+        st.session_state.chat_session_id = create_session_id()
+
+    sidebar_sessions = list_session_ids()
+    if st.session_state.chat_session_id not in sidebar_sessions:
+        sidebar_sessions.insert(0, st.session_state.chat_session_id)
+
+    st.sidebar.header("Chat Controls")
+    selected_session_id = st.sidebar.selectbox(
+        "Conversation",
+        options=sidebar_sessions,
+        index=sidebar_sessions.index(st.session_state.chat_session_id),
+    )
+    if selected_session_id != st.session_state.chat_session_id:
+        st.session_state.chat_session_id = selected_session_id
+        st.session_state.messages = [
+            AIMessage(content=message["content"]) if message["role"] == "assistant" else HumanMessage(content=message["content"])
+            for message in load_session_messages(selected_session_id)
+        ]
+        st.rerun()
+
+    if st.sidebar.button("New conversation", use_container_width=True):
+        st.session_state.chat_session_id = create_session_id()
+        st.session_state.messages = []
+        st.rerun()
+
+    if st.sidebar.button("Clear current conversation", use_container_width=True):
+        clear_session(st.session_state.chat_session_id)
+        st.session_state.messages = []
+        st.rerun()
+
+    if st.sidebar.button("Retry last response", use_container_width=True):
+        can_retry = (
+            len(st.session_state.messages) >= 2
+            and isinstance(st.session_state.messages[-1], AIMessage)
+            and isinstance(st.session_state.messages[-2], HumanMessage)
+        )
+        if can_retry:
+            st.session_state.messages.pop()
+            delete_last_assistant_message(st.session_state.chat_session_id)
+            st.session_state.retry_requested = True
+            st.rerun()
+        else:
+            st.sidebar.info("Retry requires the latest turn to be user -> assistant.")
+
+    st.sidebar.caption("Model failover order")
+    st.sidebar.code(" -> ".join(get_model_candidates()))
+
+    if "system_instruction" not in st.session_state:
+        st.session_state.system_instruction = DEFAULT_SYSTEM_INSTRUCTION
+    if "temperature" not in st.session_state:
+        st.session_state.temperature = float(get_default_temperature())
+    if "max_history_messages" not in st.session_state:
+        st.session_state.max_history_messages = 24
+    if "disable_safety_filters" not in st.session_state:
+        st.session_state.disable_safety_filters = bool(get_default_disable_safety_filters())
+    if "system_prompt_preset_name" not in st.session_state:
+        st.session_state.system_prompt_preset_name = "Balanced assistant"
+
+    preset_names = list(SYSTEM_INSTRUCTION_PRESETS.keys())
+    if st.session_state.system_prompt_preset_name not in preset_names:
+        st.session_state.system_prompt_preset_name = preset_names[0]
+
+    st.sidebar.subheader("Generation")
+    temperature_value = min(max(float(st.session_state.temperature), 0.0), 2.0)
+    context_window_value = min(max(int(st.session_state.max_history_messages), 4), 60)
+    selected_preset = st.sidebar.selectbox(
+        "System prompt preset",
+        options=preset_names,
+        index=preset_names.index(st.session_state.system_prompt_preset_name),
+        help="Quickly switch behavior before editing the custom instruction text.",
+    )
+    st.session_state.system_prompt_preset_name = selected_preset
+    if st.sidebar.button("Apply selected preset", use_container_width=True):
+        st.session_state.system_instruction = SYSTEM_INSTRUCTION_PRESETS[selected_preset]
+        st.rerun()
+
+    st.session_state.temperature = st.sidebar.slider(
+        "Temperature",
+        min_value=0.0,
+        max_value=2.0,
+        value=temperature_value,
+        step=0.05,
+        help="Lower = more focused/deterministic. Higher = more creative/varied.",
+    )
+    st.session_state.max_history_messages = st.sidebar.slider(
+        "Context window (messages)",
+        min_value=4,
+        max_value=60,
+        value=context_window_value,
+        step=2,
+        help="How many recent messages are sent to the model each turn.",
+    )
+    st.session_state.system_instruction = st.sidebar.text_area(
+        "System instruction",
+        value=str(st.session_state.system_instruction),
+        height=120,
+        help="Steers response style/behavior for this browser session.",
+    )
+    st.session_state.disable_safety_filters = st.sidebar.checkbox(
+        "Disable dangerous-content safety filter",
+        value=bool(st.session_state.disable_safety_filters),
+        help="Enable only for controlled testing scenarios.",
+    )
+    render_accessibility_controls()
+    apply_accessibility_styles()
+
+    if "messages" not in st.session_state:
+        persisted_messages = load_session_messages(st.session_state.chat_session_id)
+        st.session_state.messages = [
+            AIMessage(content=message["content"]) if message["role"] == "assistant" else HumanMessage(content=message["content"])
+            for message in persisted_messages
+        ]
+
+    if not st.session_state.messages:
+        greeting = AIMessage(content="Hello, I am a bot. How can I help you?")
+        st.session_state.messages = [greeting]
+        append_session_message(st.session_state.chat_session_id, "assistant", str(greeting.content))
+
+    session_counts = get_session_message_counts(st.session_state.chat_session_id)
+    st.sidebar.caption(
+        "Session stats: "
+        f"{session_counts['total']} total messages "
+        f"({session_counts['user']} user / {session_counts['assistant']} assistant)"
+    )
+
+    st.sidebar.subheader("Export")
+    st.sidebar.download_button(
+        "Download current chat (.md)",
+        data=export_messages_as_markdown(
+            st.session_state.messages,
+            title=f"Conversation {st.session_state.chat_session_id}",
+        ),
+        file_name=f"{st.session_state.chat_session_id}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+    st.sidebar.download_button(
+        "Download current chat (.json)",
+        data=export_messages_as_json(st.session_state.messages),
+        file_name=f"{st.session_state.chat_session_id}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    for i, message in enumerate(st.session_state.messages):
+        if isinstance(message, AIMessage):
+            with st.chat_message("assistant"):
+                st.write(message.content)
+                render_copy_button(str(message.content), key=f"assistant_msg_{i}")
+        elif isinstance(message, HumanMessage):
+            with st.chat_message("user"):
+                st.write(message.content)
+
+    prompt = st.chat_input("Say something")
+
+    if prompt:
+        if not isinstance(st.session_state.messages[-1], HumanMessage):
+            st.session_state.messages.append(HumanMessage(content=prompt))  # type: ignore
+            append_session_message(st.session_state.chat_session_id, "user", prompt)
+            with st.chat_message("user"):
+                st.write(prompt)
+
+        if not isinstance(st.session_state.messages[-1], AIMessage):
+            with st.chat_message("assistant"):
+                try:
+                    response = st.write_stream(
+                        stream_chat_response(
+                            st.session_state.messages,
+                            system_instruction=st.session_state.system_instruction,
+                            max_history_messages=st.session_state.max_history_messages,
+                            temperature=st.session_state.temperature,
+                            disable_safety_filters=st.session_state.disable_safety_filters,
+                        )
+                    )
+                except Exception as err:
+                    st.error(f"Something went wrong talking to the model:\n\n`{err}`")
+                    st.info(
+                        "If this was a temporary provider congestion issue, click "
+                        "'Retry last response' in the sidebar."
+                    )
+                    if isinstance(st.session_state.messages[-1], HumanMessage):
+                        st.session_state.messages.pop()
+                        delete_last_message(st.session_state.chat_session_id, role="user")
+                else:
+                    text = str(response) if response else "(No text returned from the model.)"
+                    st.session_state.messages.append(AIMessage(content=text))
+                    append_session_message(st.session_state.chat_session_id, "assistant", text)
+                    render_copy_button(text, key=f"assistant_msg_{len(st.session_state.messages) - 1}")
+
+    if st.session_state.get("retry_requested"):
+        st.session_state.retry_requested = False
+        if st.session_state.messages and isinstance(st.session_state.messages[-1], HumanMessage):
+            with st.chat_message("assistant"):
+                try:
+                    retry_response = st.write_stream(
+                        stream_chat_response(
+                            st.session_state.messages,
+                            system_instruction=st.session_state.system_instruction,
+                            max_history_messages=st.session_state.max_history_messages,
+                            temperature=st.session_state.temperature,
+                            disable_safety_filters=st.session_state.disable_safety_filters,
+                        )
+                    )
+                except Exception as err:
+                    st.error(f"Retry failed talking to the model:\n\n`{err}`")
+                    st.info("Try again in a few seconds, or switch to a lighter fallback model.")
+                else:
+                    retry_text = str(retry_response) if retry_response else "(No text returned from the model.)"
+                    st.session_state.messages.append(AIMessage(content=retry_text))
+                    append_session_message(st.session_state.chat_session_id, "assistant", retry_text)
+                    render_copy_button(retry_text, key=f"assistant_msg_{len(st.session_state.messages) - 1}")
+- name: utils\chain.py
+  content: |
+    import os
+    from typing import Any
+
+    from dotenv import load_dotenv
+    from langchain_core.output_parsers import StrOutputParser
+
+    from utils.history import format_messages_as_transcript
+    from utils.load_llm import get_llm_instance, get_model_candidates, is_transient_model_error
+    from utils.streaming_chain import build_chat_prompt
+
+    if "GOOGLE_API_KEY" not in os.environ and "GEMINI_API_KEY" not in os.environ:
+        load_dotenv()
+
+
+    def run_chat_turn(
+        messages: list[Any],
+        *,
+        system_instruction: str | None = None,
+        max_history_messages: int | None = 24,
+        temperature: float | None = None,
+        disable_safety_filters: bool | None = None,
+    ) -> str:
+        """
+        Non-streaming reply for the current conversation. `messages` may be BaseMessage
+        objects or dicts with role/content (as in the simple Streamlit app).
+
+        :param messages: Chat history messages.
+        :param system_instruction: Optional custom system instruction.
+        :param max_history_messages: Maximum recent messages to include in context.
+        :param temperature: Optional generation temperature override.
+        :param disable_safety_filters: Optional override for dangerous-content filtering.
+        """
+        transcript = format_messages_as_transcript(
+            messages,
+            max_messages=max_history_messages,
+        )
+        errors: list[str] = []
+        model_candidates = get_model_candidates()
+        prompt = build_chat_prompt(system_instruction)
+        for index, model_name in enumerate(model_candidates):
+            llm = get_llm_instance(
+                streaming=False,
+                model_name=model_name,
+                temperature=temperature,
+                disable_safety_filters=disable_safety_filters,
+            )
+            chain = prompt | llm | StrOutputParser()
+            try:
+                return chain.invoke({"chat_transcript": transcript})
+            except Exception as err:  # noqa: BLE001 - model/provider errors are runtime-dependent
+                errors.append(f"{model_name}: {err}")
+                is_last_model = index == len(model_candidates) - 1
+                if is_last_model or not is_transient_model_error(err):
+                    break
+
+        joined_errors = " | ".join(errors)
+        raise RuntimeError(
+            "All configured models failed. Set GEMINI_MODEL/GEMINI_FALLBACK_MODELS in .env "
+            f"or try again shortly. Details: {joined_errors}"
+        )
+- name: utils\chat_store.py
+  content: |
+    """Persist Streamlit chat messages in a local SQLite database."""
+
+    from __future__ import annotations
+
+    import sqlite3
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from uuid import uuid4
+
+    CHAT_DB_PATH = Path(__file__).resolve().parents[1] / "chat_history.db"
+
+
+    def _connect() -> sqlite3.Connection:
+        """
+        Return a configured SQLite connection for chat operations.
+
+        Uses a busy timeout and WAL mode to reduce lock contention when multiple
+        Streamlit tabs hit the same local DB.
+        """
+        connection = sqlite3.connect(CHAT_DB_PATH, timeout=10)
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+        return connection
+
+
+    def initialize_chat_store() -> None:
+        """
+        Create the SQLite schema for chat persistence.
+
+        :returns result: None.
+        """
+        with _connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+                ON chat_messages (session_id, created_at)
+                """
+            )
+            connection.commit()
+
+
+    def create_session_id() -> str:
+        """
+        Return a short unique chat session identifier.
+
+        :returns session_id: Unique chat session ID.
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        return f"chat-{timestamp}-{uuid4().hex[:6]}"
+
+
+    def list_session_ids(limit: int = 50) -> list[str]:
+        """
+        List recent session identifiers ordered by latest activity.
+
+        :param limit: Maximum number of session IDs to return.
+
+        :returns session_ids: Recent session IDs.
+        """
+        initialize_chat_store()
+        with _connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT session_id, MAX(created_at) AS last_seen
+                FROM chat_messages
+                GROUP BY session_id
+                ORDER BY last_seen DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+
+    def load_session_messages(session_id: str) -> list[dict[str, str]]:
+        """
+        Load all persisted messages for a chat session.
+
+        :param session_id: Session identifier to load.
+
+        :returns messages: Message dictionaries with role/content keys.
+        """
+        initialize_chat_store()
+        with _connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT role, content
+                FROM chat_messages
+                WHERE session_id = ?
+                ORDER BY id ASC
+                """,
+                (session_id,),
+            ).fetchall()
+        return [{"role": role, "content": content} for role, content in rows]
+
+
+    def append_session_message(session_id: str, role: str, content: str) -> None:
+        """
+        Append a message to the persistent chat session log.
+
+        :param session_id: Session identifier to update.
+        :param role: Message role value (for example: user or assistant).
+        :param content: Message text content.
+
+        :returns result: None.
+        """
+        initialize_chat_store()
+        created_at = datetime.now(timezone.utc).isoformat()
+        with _connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chat_messages (session_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, role, content, created_at),
+            )
+            connection.commit()
+
+
+    def clear_session(session_id: str) -> None:
+        """
+        Delete all persisted messages for a given session.
+
+        :param session_id: Session identifier to clear.
+
+        :returns result: None.
+        """
+        initialize_chat_store()
+        with _connect() as connection:
+            connection.execute(
+                "DELETE FROM chat_messages WHERE session_id = ?",
+                (session_id,),
+            )
+            connection.commit()
+
+
+    def get_session_message_counts(session_id: str) -> dict[str, int]:
+        """
+        Return message counts for a session by role and total.
+
+        :param session_id: Session identifier to inspect.
+
+        :returns counts: Dictionary with total/user/assistant counts.
+        """
+        initialize_chat_store()
+        with _connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT role, COUNT(*) AS count
+                FROM chat_messages
+                WHERE session_id = ?
+                GROUP BY role
+                """,
+                (session_id,),
+            ).fetchall()
+
+        counts = {"total": 0, "user": 0, "assistant": 0}
+        for role, count in rows:
+            normalized_role = str(role).lower()
+            counts["total"] += int(count)
+            if normalized_role in counts:
+                counts[normalized_role] = int(count)
+        return counts
+
+
+    def delete_last_message(session_id: str, role: str | None = None) -> bool:
+        """
+        Delete the most recent message for a session (optionally filtered by role).
+
+        :param session_id: Session identifier to update.
+        :param role: Optional role filter (for example "assistant" or "user").
+
+        :returns did_delete: True when a message was removed.
+        """
+        initialize_chat_store()
+        with _connect() as connection:
+            if role is None:
+                row = connection.execute(
+                    """
+                    SELECT id
+                    FROM chat_messages
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (session_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT id
+                    FROM chat_messages
+                    WHERE session_id = ? AND role = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (session_id, role),
+                ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                "DELETE FROM chat_messages WHERE id = ?",
+                (row[0],),
+            )
+            connection.commit()
+            return True
+
+
+    def delete_last_assistant_message(session_id: str) -> bool:
+        """
+        Delete the most recent assistant message for a session.
+
+        :param session_id: Session identifier to update.
+
+        :returns did_delete: True when a message was removed.
+        """
+        return delete_last_message(session_id, role="assistant")
+- name: utils\copy_button.py
+  content: |
+    """Streamlit helper: copy arbitrary text to the clipboard from a button click."""
+
+    from __future__ import annotations
+
+    import json
+
+    import streamlit as st
+
+
+    def render_copy_button(text: str, *, key: str) -> None:
+        """
+        Render a 'Copy' button that copies `text` in the browser.
+
+        Uses JSON to safely embed the string in JavaScript. `key` should be unique
+        per button (e.g. message index).
+        """
+        safe_key = "".join(c if c.isalnum() else "_" for c in key)[:96]
+        js_literal = json.dumps(text)
+        st.iframe(
+            f"""
+            <div style="font-family: system-ui, sans-serif; margin-top: 0.35rem;">
+                <button
+                    type="button"
+                    id="btn_{safe_key}"
+                    aria-label="Copy assistant reply to clipboard"
+                    title="Copy assistant reply to clipboard"
+                    style="padding: 0.45rem 0.95rem; min-height: 36px; cursor: pointer;
+                           border-radius: 8px; border: 1px solid rgba(49, 51, 63, 0.35);
+                           background: rgba(250, 250, 250, 1); font-size: 14px; line-height: 1.2;"
+                >Copy reply</button>
+                <span
+                    id="ok_{safe_key}"
+                    role="status"
+                    aria-live="polite"
+                    style="margin-left: 10px; font-size: 13px; color: #0d8050; display: none;"
+                >Copied!</span>
+            </div>
+            <script>
+                (function() {{
+                    const payload = {js_literal};
+                    const btn = document.getElementById("btn_{safe_key}");
+                    const ok = document.getElementById("ok_{safe_key}");
+                    if (!btn) return;
+                    btn.addEventListener("focus", function() {{
+                        btn.style.outline = "2px solid #005fcc";
+                        btn.style.outlineOffset = "2px";
+                    }});
+                    btn.addEventListener("blur", function() {{
+                        btn.style.outline = "none";
+                    }});
+                    btn.addEventListener("click", async function() {{
+                        try {{
+                            if (!navigator.clipboard || !navigator.clipboard.writeText) {{
+                                throw new Error("Clipboard API unavailable");
+                            }}
+                            await navigator.clipboard.writeText(payload);
+                            ok.textContent = "Copied!";
+                            ok.style.color = "#0d8050";
+                            ok.style.display = "inline";
+                            setTimeout(function() {{ ok.style.display = "none"; }}, 2000);
+                        }} catch (e) {{
+                            ok.textContent = "Clipboard blocked; use manual copy.";
+                            ok.style.color = "#a04400";
+                            ok.style.display = "inline";
+                            window.prompt("Copy failed in this browser. Select the text below and press Ctrl+C:", payload);
+                        }}
+                    }});
+                }})();
+            </script>
+            """,
+            height=58,
+            width="content",
+        )
+- name: utils\export.py
+  content: |+
+    """Helpers for exporting conversations from Streamlit session state."""
+
+    from __future__ import annotations
+
+    import json
+    from collections.abc import Sequence
+    from datetime import datetime, timezone
+    from typing import Any
+
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+
+
+    def normalize_messages(messages: Sequence[Any]) -> list[dict[str, str]]:
+        """
+        Normalize mixed message objects into role/content dictionaries.
+
+        :param messages: Mixed dict/BaseMessage message list.
+
+        :returns normalized_messages: List of dictionaries with role/content keys.
+        """
+        normalized_messages: list[dict[str, str]] = []
+        for message in messages:
+            if isinstance(message, HumanMessage):
+                role = "user"
+                content = str(message.content)
+            elif isinstance(message, AIMessage):
+                role = "assistant"
+                content = str(message.content)
+            elif isinstance(message, dict):
+                role = str(message.get("role", "assistant"))
+                content = str(message.get("content", ""))
+            elif isinstance(message, BaseMessage):
+                role = str(getattr(message, "type", "assistant"))
+                content = str(getattr(message, "content", ""))
+            else:
+                role = "assistant"
+                content = str(message)
+            normalized_messages.append({"role": role, "content": content})
+        return normalized_messages
+
+
+    def export_messages_as_json(messages: Sequence[Any]) -> str:
+        """
+        Serialize messages in JSON format.
+
+        :param messages: Mixed dict/BaseMessage message list.
+
+        :returns payload: JSON payload string.
+        """
+        return json.dumps(normalize_messages(messages), indent=2)
+
+
+    def export_messages_as_markdown(messages: Sequence[Any], *, title: str = "Conversation") -> str:
+        """
+        Serialize messages in Markdown format.
+
+        :param messages: Mixed dict/BaseMessage message list.
+        :param title: Markdown heading title.
+
+        :returns markdown_text: Markdown payload string.
+        """
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        lines = [f"# {title}", "", f"_Exported: {now_utc}_", ""]
+        for message in normalize_messages(messages):
+            role = message["role"].lower()
+            label = "User" if role == "user" else "Assistant" if role == "assistant" else role.title()
+            content = message["content"].strip() or "(empty message)"
+            lines.extend([f"## {label}", "", content, ""])
+        return "\n".join(lines).strip() + "\n"
+
+- name: utils\history.py
+  content: |
+    """Format chat history for plain-text prompts (Streamlit + LangChain)."""
+
+    from __future__ import annotations
+
+    from collections.abc import Sequence
+    from typing import Any
+
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+
+
+    def _trim_messages(messages: Sequence[Any], *, max_messages: int | None = None) -> list[Any]:
+        """Return the most recent messages when a limit is provided."""
+        if max_messages is None or max_messages <= 0:
+            return list(messages)
+        return list(messages[-max_messages:])
+
+
+    def format_messages_as_transcript(
+        messages: Sequence[Any], *, max_messages: int | None = None
+    ) -> str:
+        """Turn LangChain messages (or role/content dicts) into a readable transcript."""
+        trimmed_messages = _trim_messages(messages, max_messages=max_messages)
+        lines: list[str] = []
+        for msg in trimmed_messages:
+            if isinstance(msg, HumanMessage):
+                lines.append(f"User: {msg.content}")
+            elif isinstance(msg, AIMessage):
+                lines.append(f"Assistant: {msg.content}")
+            elif isinstance(msg, dict) and "role" in msg and "content" in msg:
+                role = msg["role"]
+                label = "User" if role == "user" else "Assistant" if role == "assistant" else role
+                lines.append(f"{label}: {msg['content']}")
+            elif isinstance(msg, BaseMessage):
+                role = getattr(msg, "type", "unknown")
+                content = getattr(msg, "content", "")
+                lines.append(f"{role}: {content}")
+            else:
+                lines.append(str(msg))
+        return "\n".join(lines) if lines else "(no prior messages)"
+- name: utils\load_llm.py
+  content: |
+    import os
+
+    from dotenv import load_dotenv
+    from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, HarmCategory
+
+    load_dotenv()
+
+    # "gemini-pro" is deprecated; use a current model (override with GEMINI_MODEL in .env).
+    _DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    _FALLBACK_MODELS = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.0-flash")
+    _DEFAULT_TEMPERATURE_FALLBACK = 0.2
+
+
+    def _env_flag(name: str, *, default: bool = False) -> bool:
+        """
+        Parse a boolean environment variable.
+
+        :param name: Environment variable name.
+        :param default: Value to return when unset.
+
+        :returns value: Parsed flag value.
+        """
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+    def _coerce_temperature(value: float | str | None, *, fallback: float) -> float:
+        """
+        Clamp model temperature into the Gemini-supported range [0.0, 2.0].
+
+        :param value: Raw value from UI or env.
+        :param fallback: Safe fallback when parsing fails.
+
+        :returns temperature: Clamped float value.
+        """
+        try:
+            parsed = float(value) if value is not None else float(fallback)
+        except (TypeError, ValueError):
+            parsed = float(fallback)
+        return max(0.0, min(2.0, parsed))
+
+
+    _DEFAULT_TEMPERATURE = _coerce_temperature(
+        os.getenv("GEMINI_TEMPERATURE"),
+        fallback=_DEFAULT_TEMPERATURE_FALLBACK,
+    )
+    _DEFAULT_DISABLE_SAFETY_FILTERS = _env_flag(
+        "GEMINI_DISABLE_SAFETY_FILTERS",
+        default=False,
+    )
+
+    _llm_cache: dict[tuple[bool, str, float, bool], ChatGoogleGenerativeAI] = {}
+
+
+    def is_api_key_configured() -> bool:
+        """
+        Return whether at least one Gemini API key is configured.
+
+        :returns has_key: True when a key is available in env.
+        """
+        return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+
+
+    def get_model_candidates() -> list[str]:
+        """
+        Return ordered model candidates for failover attempts.
+
+        :returns model_names: Ordered unique model names (primary first).
+        """
+        raw_models = [_DEFAULT_MODEL, *_FALLBACK_MODELS.split(",")]
+        normalized_models = [model.strip() for model in raw_models if model.strip()]
+        unique_models = list(dict.fromkeys(normalized_models))
+        return unique_models
+
+
+    def get_default_temperature() -> float:
+        """
+        Return the configured default temperature.
+
+        :returns temperature: Default model temperature in [0.0, 2.0].
+        """
+        return _DEFAULT_TEMPERATURE
+
+
+    def get_default_disable_safety_filters() -> bool:
+        """
+        Return whether safety filters are disabled by default.
+
+        :returns disable_filters: True when explicit unfiltered mode is enabled.
+        """
+        return _DEFAULT_DISABLE_SAFETY_FILTERS
+
+
+    def is_transient_model_error(error: Exception) -> bool:
+        """
+        Return whether an exception looks transient and retryable.
+
+        :param error: Raised model invocation exception.
+
+        :returns is_transient: True when a fallback retry should be attempted.
+        """
+        error_text = str(error).lower()
+        transient_markers = (
+            "429",
+            "rate limit",
+            "resource exhausted",
+            "overloaded",
+            "congestion",
+            "temporarily unavailable",
+            "deadline exceeded",
+            "timeout",
+            "unavailable",
+        )
+        return any(marker in error_text for marker in transient_markers)
+
+
+    def get_llm_instance(
+        *,
+        streaming: bool = False,
+        model_name: str | None = None,
+        temperature: float | None = None,
+        disable_safety_filters: bool | None = None,
+    ) -> ChatGoogleGenerativeAI:
+        """
+        Return a cached ChatGoogleGenerativeAI client.
+
+        :param streaming: Whether this client should stream token chunks.
+        :param model_name: Optional explicit model name.
+        :param temperature: Optional generation temperature override.
+        :param disable_safety_filters: Optional override for dangerous-content filter behavior.
+
+        :returns llm: Cached model client for the selected model and mode.
+        """
+        if not is_api_key_configured():
+            raise RuntimeError(
+                "No API key found. Create a .env file in the project folder with:\n"
+                "  GOOGLE_API_KEY=your_key_here\n"
+                "(GEMINI_API_KEY also works.)"
+            )
+
+        selected_model = model_name or _DEFAULT_MODEL
+        selected_temperature = _coerce_temperature(
+            temperature,
+            fallback=_DEFAULT_TEMPERATURE,
+        )
+        selected_disable_safety_filters = (
+            _DEFAULT_DISABLE_SAFETY_FILTERS
+            if disable_safety_filters is None
+            else bool(disable_safety_filters)
+        )
+
+        key = (
+            streaming,
+            selected_model,
+            round(selected_temperature, 3),
+            selected_disable_safety_filters,
+        )
+        if key not in _llm_cache:
+            client_kwargs: dict[str, object] = {
+                "model": selected_model,
+                "streaming": streaming,
+                "temperature": selected_temperature,
+            }
+            if selected_disable_safety_filters:
+                client_kwargs["safety_settings"] = {
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                }
+
+            _llm_cache[key] = ChatGoogleGenerativeAI(
+                **client_kwargs,
+            )
+        return _llm_cache[key]
+- name: utils\presets.py
+  content: |+
+    """Reusable system-instruction presets for chat behavior."""
+
+    from __future__ import annotations
+
+    SYSTEM_INSTRUCTION_PRESETS: dict[str, str] = {
+        "Balanced assistant": (
+            "You are a helpful assistant. Answer clearly and accurately based on the conversation."
+        ),
+        "Concise answers": (
+            "You are a concise assistant. Keep answers brief, practical, and avoid unnecessary detail."
+        ),
+        "Step-by-step tutor": (
+            "You are a patient tutor. Teach with clear, numbered steps and short examples."
+        ),
+        "Structured analyst": (
+            "You are an analytical assistant. Organize responses into sections with key assumptions, "
+            "findings, and recommendations."
+        ),
+        "Friendly explainer": (
+            "You are a friendly explainer. Use plain language, define jargon, and keep a supportive tone."
+        ),
+    }
+
+- name: utils\streaming_chain.py
+  content: |
+    from collections.abc import Iterator, Sequence
+    from langchain_core.messages import BaseMessage
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+    from utils.history import format_messages_as_transcript
+    from utils.load_llm import get_llm_instance, get_model_candidates, is_transient_model_error
+
+    DEFAULT_SYSTEM_INSTRUCTION = (
+        "You are a helpful assistant. Answer clearly and accurately based on the conversation."
+    )
+
+
+    def build_chat_prompt(system_instruction: str | None = None) -> ChatPromptTemplate:
+        """
+        Build the chat prompt with an optional runtime system instruction.
+
+        :param system_instruction: Optional custom system prompt text.
+
+        :returns prompt: Prompt template for the current turn.
+        """
+        instruction = (
+            system_instruction.strip()
+            if isinstance(system_instruction, str) and system_instruction.strip()
+            else DEFAULT_SYSTEM_INSTRUCTION
+        )
+        return ChatPromptTemplate.from_messages(
+            [
+                ("system", instruction),
+                (
+                    "human",
+                    "Conversation:\n{chat_transcript}\n\nWrite your next reply as the assistant.",
+                ),
+            ]
+        )
+
+
+    def stream_chat_response(
+        messages: Sequence[BaseMessage],
+        *,
+        system_instruction: str | None = None,
+        max_history_messages: int | None = 24,
+        temperature: float | None = None,
+        disable_safety_filters: bool | None = None,
+    ) -> Iterator[str]:
+        """
+        Stream plain-text tokens for the assistant reply, given full message history
+        (including the latest user message).
+
+        :param messages: Chat history messages.
+        :param system_instruction: Optional custom system instruction.
+        :param max_history_messages: Maximum recent messages to include in context.
+        :param temperature: Optional generation temperature override.
+        :param disable_safety_filters: Optional override for dangerous-content filtering.
+        """
+        transcript = format_messages_as_transcript(
+            messages,
+            max_messages=max_history_messages,
+        )
+        errors: list[str] = []
+        model_candidates = get_model_candidates()
+        prompt = build_chat_prompt(system_instruction)
+        for index, model_name in enumerate(model_candidates):
+            llm = get_llm_instance(
+                streaming=True,
+                model_name=model_name,
+                temperature=temperature,
+                disable_safety_filters=disable_safety_filters,
+            )
+            chain = prompt | llm | StrOutputParser()
+            has_streamed_chunk = False
+            try:
+                for chunk in chain.stream({"chat_transcript": transcript}):
+                    if isinstance(chunk, str) and chunk:
+                        has_streamed_chunk = True
+                        yield chunk
+                return
+            except Exception as err:  # noqa: BLE001 - model/provider errors are runtime-dependent
+                errors.append(f"{model_name}: {err}")
+                is_last_model = index == len(model_candidates) - 1
+                # If partial text already reached the UI, switching models mid-response can
+                # create duplicated/conflicting output. In that case we stop and ask user to retry.
+                if has_streamed_chunk:
+                    raise RuntimeError(
+                        "Streaming response was interrupted after partial output. "
+                        "Use 'Retry last response' to regenerate the full answer cleanly. "
+                        f"Last error from {model_name}: {err}"
+                    ) from err
+
+                if is_last_model or not is_transient_model_error(err):
+                    break
+
+        joined_errors = " | ".join(errors)
+        raise RuntimeError(
+            "All configured models failed before streaming any text. "
+            f"Details: {joined_errors}"
+        )
+- name: utils\ui_accessibility.py
+  content: |+
+    """Streamlit UI accessibility controls and styling helpers."""
+
+    from __future__ import annotations
+
+    import streamlit as st
+
+    _DEFAULTS: dict[str, float | bool] = {
+        "ui_font_scale": 1.0,
+        "ui_line_height": 1.55,
+        "ui_high_contrast": False,
+        "ui_reduce_motion": False,
+    }
+
+
+    def initialize_accessibility_state() -> None:
+        """Initialize accessibility-related session state defaults."""
+        for key, value in _DEFAULTS.items():
+            if key not in st.session_state:
+                st.session_state[key] = value
+
+
+    def render_accessibility_controls() -> None:
+        """Render sidebar controls for UI accessibility preferences."""
+        st.sidebar.subheader("Accessibility")
+        font_scale = float(st.session_state.get("ui_font_scale", _DEFAULTS["ui_font_scale"]))
+        line_height = float(st.session_state.get("ui_line_height", _DEFAULTS["ui_line_height"]))
+        st.session_state.ui_font_scale = st.sidebar.slider(
+            "Text size",
+            min_value=0.9,
+            max_value=1.35,
+            value=min(max(font_scale, 0.9), 1.35),
+            step=0.05,
+            help="Increase text size for chat messages and input area.",
+        )
+        st.session_state.ui_line_height = st.sidebar.slider(
+            "Line spacing",
+            min_value=1.3,
+            max_value=1.9,
+            value=min(max(line_height, 1.3), 1.9),
+            step=0.05,
+            help="Higher spacing can improve readability for longer responses.",
+        )
+        st.session_state.ui_high_contrast = st.sidebar.checkbox(
+            "High-contrast message outlines",
+            value=bool(st.session_state.get("ui_high_contrast", _DEFAULTS["ui_high_contrast"])),
+            help="Emphasizes chat bubble boundaries and control outlines.",
+        )
+        st.session_state.ui_reduce_motion = st.sidebar.checkbox(
+            "Reduce motion",
+            value=bool(st.session_state.get("ui_reduce_motion", _DEFAULTS["ui_reduce_motion"])),
+            help="Disables most transition and animation effects.",
+        )
+
+        if st.sidebar.button("Reset accessibility settings", use_container_width=True):
+            for key, value in _DEFAULTS.items():
+                st.session_state[key] = value
+            st.rerun()
+
+
+    def apply_accessibility_styles() -> None:
+        """Apply CSS tweaks based on current accessibility preferences."""
+        font_scale = float(st.session_state.get("ui_font_scale", _DEFAULTS["ui_font_scale"]))
+        line_height = float(st.session_state.get("ui_line_height", _DEFAULTS["ui_line_height"]))
+        high_contrast = bool(st.session_state.get("ui_high_contrast", _DEFAULTS["ui_high_contrast"]))
+        reduce_motion = bool(st.session_state.get("ui_reduce_motion", _DEFAULTS["ui_reduce_motion"]))
+
+        contrast_styles = (
+            """
+            .stApp [data-testid="stChatMessage"] {
+                border: 2px solid rgba(0, 0, 0, 0.7);
+                border-radius: 0.85rem;
+                padding: 0.25rem 0.4rem;
+            }
+            .stApp [data-testid="stSidebar"] button,
+            .stApp [data-testid="stSidebar"] [role="button"] {
+                border-width: 2px !important;
+            }
+            """
+            if high_contrast
+            else ""
+        )
+
+        motion_styles = (
+            """
+            .stApp *, .stApp *::before, .stApp *::after {
+                animation: none !important;
+                transition: none !important;
+                scroll-behavior: auto !important;
+            }
+            """
+            if reduce_motion
+            else ""
+        )
+
+        st.markdown(
+            f"""
+            <style>
+                .stApp [data-testid="stChatMessage"] p,
+                .stApp [data-testid="stChatMessage"] li,
+                .stApp [data-testid="stChatMessage"] code,
+                .stApp [data-testid="stChatMessage"] pre {{
+                    font-size: {font_scale:.2f}rem !important;
+                    line-height: {line_height:.2f} !important;
+                }}
+                .stApp [data-testid="stChatInput"] textarea {{
+                    font-size: {font_scale:.2f}rem !important;
+                    line-height: {line_height:.2f} !important;
+                }}
+                .stApp [data-testid="stChatMessage"] pre {{
+                    white-space: pre-wrap;
+                    word-break: break-word;
+                }}
+                .stApp button:focus-visible,
+                .stApp [role="button"]:focus-visible,
+                .stApp input:focus-visible,
+                .stApp select:focus-visible,
+                .stApp textarea:focus-visible {{
+                    outline: 3px solid #005fcc !important;
+                    outline-offset: 2px !important;
+                }}
+                {contrast_styles}
+                {motion_styles}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+- name: utils\__init__.py
+  content: ''
