@@ -206,15 +206,18 @@ if prompt:
     if not isinstance(st.session_state.messages[-1], AIMessage):
         with st.chat_message("assistant"):
             try:
-                response = st.write_stream(
-                    stream_chat_response(
-                        st.session_state.messages,
-                        system_instruction=st.session_state.system_instruction,
-                        max_history_messages=st.session_state.max_history_messages,
-                        temperature=st.session_state.temperature,
-                        disable_safety_filters=st.session_state.disable_safety_filters,
-                    )
-                )
+                placeholder = st.empty()
+                collected = ""
+                for chunk in stream_chat_response(
+                    st.session_state.messages,
+                    system_instruction=st.session_state.system_instruction,
+                    max_history_messages=st.session_state.max_history_messages,
+                    temperature=st.session_state.temperature,
+                    disable_safety_filters=st.session_state.disable_safety_filters,
+                ):
+                    if isinstance(chunk, str) and chunk:
+                        collected += chunk
+                        placeholder.write(collected)
             except Exception as err:
                 st.error(f"Something went wrong talking to the model:\n\n`{err}`")
                 st.info(
@@ -225,7 +228,7 @@ if prompt:
                     st.session_state.messages.pop()
                     delete_last_message(st.session_state.chat_session_id, role="user")
             else:
-                text = str(response) if response else "(No text returned from the model.)"
+                text = str(collected) if collected else "(No text returned from the model.)"
                 st.session_state.messages.append(AIMessage(content=text))
                 append_session_message(st.session_state.chat_session_id, "assistant", text)
                 render_copy_button(text, key=f"assistant_msg_{len(st.session_state.messages) - 1}")
@@ -235,20 +238,23 @@ if st.session_state.get("retry_requested"):
     if st.session_state.messages and isinstance(st.session_state.messages[-1], HumanMessage):
         with st.chat_message("assistant"):
             try:
-                retry_response = st.write_stream(
-                    stream_chat_response(
-                        st.session_state.messages,
-                        system_instruction=st.session_state.system_instruction,
-                        max_history_messages=st.session_state.max_history_messages,
-                        temperature=st.session_state.temperature,
-                        disable_safety_filters=st.session_state.disable_safety_filters,
-                    )
-                )
+                placeholder = st.empty()
+                collected = ""
+                for chunk in stream_chat_response(
+                    st.session_state.messages,
+                    system_instruction=st.session_state.system_instruction,
+                    max_history_messages=st.session_state.max_history_messages,
+                    temperature=st.session_state.temperature,
+                    disable_safety_filters=st.session_state.disable_safety_filters,
+                ):
+                    if isinstance(chunk, str) and chunk:
+                        collected += chunk
+                        placeholder.write(collected)
             except Exception as err:
                 st.error(f"Retry failed talking to the model:\n\n`{err}`")
                 st.info("Try again in a few seconds, or switch to a lighter fallback model.")
             else:
-                retry_text = str(retry_response) if retry_response else "(No text returned from the model.)"
+                retry_text = str(collected) if collected else "(No text returned from the model.)"
                 st.session_state.messages.append(AIMessage(content=retry_text))
                 append_session_message(st.session_state.chat_session_id, "assistant", retry_text)
                 render_copy_button(retry_text, key=f"assistant_msg_{len(st.session_state.messages) - 1}")

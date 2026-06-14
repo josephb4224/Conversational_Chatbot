@@ -9,29 +9,11 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app_path = os.path.join(BASE_DIR, "streaming_app.py")
 
-subprocess.run([
-    "python",
-    "-m",
-    "streamlit",
-    "run",
-    app_path
-])
-
-import subprocess
-import os
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 env = os.environ.copy()
-
-# Force local execution context
+# Ensure local imports from the project root work when launching
 env["PYTHONPATH"] = BASE_DIR
-
-subprocess.run([
-    "streamlit",
-    "run",
-    os.path.join(BASE_DIR, "streamlit_app.py")
-], env=env)
+cmd = [sys.executable, "-m", "streamlit", "run", app_path]
+subprocess.run(cmd, env=env)
 
 
 # Forcing PyInstaller to include Streamlit:
