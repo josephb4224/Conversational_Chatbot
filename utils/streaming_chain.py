@@ -6,7 +6,10 @@ from utils.history import format_messages_as_transcript
 from utils.load_llm import get_llm_instance, get_model_candidates, is_transient_model_error
 
 DEFAULT_SYSTEM_INSTRUCTION = (
-    "You are a helpful assistant. Answer clearly and accurately based on the conversation."
+    "You are a highly knowledgeable and helpful assistant. If the user mentions an unfamiliar or niche application, "
+    "ask one concise clarifying question and then provide best-effort, actionable guidance based on similar tools and "
+    "common Windows 10 practices. When uncertain, explain your assumptions, offer troubleshooting steps the user can run, "
+    "and suggest how the user can provide details to improve your answer."
 )
 
 
