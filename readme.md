@@ -33,13 +33,11 @@ pip install -r requirements.txt
 
 1. Copy `.env.example` to `.env`.
 2. Add your Gemini key:
-
 ```env
 GOOGLE_API_KEY=your_key_here
 ```
 
 Optional settings:
-
 ```env
 # Primary model
 GEMINI_MODEL=gemini-2.5-flash
@@ -59,13 +57,11 @@ GEMINI_DISABLE_SAFETY_FILTERS=false
 ## Run
 
 Streaming UI (recommended):
-
 ```bash
 streamlit run streaming_app.py
 ```
 
 Non-streaming UI:
-
 ```bash
 streamlit run app.py
 ```
@@ -82,20 +78,20 @@ If browser auto-open fails, use [http://localhost:8501](http://localhost:8501).
 - `Export`: download current conversation as `.md` or `.json`.
 - Assistant bubble action: `Copy reply`.
 
----
-
 ## Project Layout
 
-| Path | Purpose |
-|------|---------|
-| `streaming_app.py` | Streamlit app with token streaming |
-| `app.py` | Streamlit app with full-turn replies |
-| `utils/load_llm.py` | Gemini client setup and config |
-| `utils/streaming_chain.py` | Streaming chain logic |
-| `utils/chain.py` | Non-streaming chain logic |
-| `utils/history.py` | Transcript formatting and context trimming |
-| `utils/chat_store.py` | SQLite persistence helpers |
-| `utils/export.py` | Markdown/JSON export helpers |
-| `utils/presets.py` | Reusable system-instruction presets |
-| `utils/ui_accessibility.py` | Sidebar accessibility controls and CSS |
-| `utils/copy_button.py` | Clipboard copy button helper |
+| Path 										| Purpose 													|
+|---------------------------------------|--------------------------------------------------------|
+| `streaming_app.py` 			| Streamlit app with token streaming 			|
+| `app.py` 								| Streamlit app with full-turn replies 			|
+| `utils/load_llm.py` 				| Gemini client setup and config 				|
+| `utils/streaming_chain.py` 	| Streaming chain logic 								|
+| `utils/chain.py` 					| Non-streaming chain logic 						|
+| `utils/history.py` 					| Transcript formatting & context trimming |
+| `utils/chat_store.py` 			| SQLite persistence helpers 						|
+| `utils/export.py` 					| Markdown/JSON export helpers 				|
+| `utils/presets.py` 					| Reusable system-instruction presets 		|
+| `utils/ui_accessibility.py` 	| Sidebar accessibility controls and CSS 		|
+| `utils/copy_button.py` 		| Clipboard copy button helper 					|
+
+---
